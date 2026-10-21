@@ -1,0 +1,5 @@
+#!/bin/sh
+# Git runs this hook, and not pre-commit, for a merge that makes a commit.
+set -eu
+
+exec "$(dirname "$0")/pre-commit"

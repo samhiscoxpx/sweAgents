@@ -1,0 +1,16 @@
+{
+  "note": "The boundary file and the architecture config file. A change to this file needs the human principal's approval. Every entry carries a reason. The keys are the sections the architecture-guardrails skill names: sensitivePaths is its sensitive paths section and restrictedImports its restricted imports section; add its other sections as this repository needs them.",
+  "sensitivePaths": [],
+  "sensitivePathsEntryForm": {
+    "path": "<a file or glob inside the security boundary>",
+    "kind": "<credentials | caller | rules | confinement | shared-state | disclosure>",
+    "reason": "<what crosses a scope if this file is wrong>"
+  },
+  "restrictedImports": {},
+  "restrictedImportsEntryForm": {
+    "<restricted dependency>": {
+      "allowed": ["<a glob of files allowed to import it>"],
+      "reason": "<why only these files may hold it>"
+    }
+  }
+}

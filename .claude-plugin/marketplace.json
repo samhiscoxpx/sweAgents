@@ -1,0 +1,14 @@
+{
+  "name": "swe",
+  "owner": {
+    "name": "Ben Hall",
+    "email": "46673102+benjaminfh@users.noreply.github.com"
+  },
+  "plugins": [
+    {
+      "name": "swe",
+      "source": "./plugins/swe",
+      "description": "Shared engineering rules, role and workflow skills, including overnight coordination, verified status, open-decision walkthroughs and rule editing."
+    }
+  ]
+}

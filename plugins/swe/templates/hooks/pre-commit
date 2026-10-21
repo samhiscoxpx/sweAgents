@@ -1,0 +1,16 @@
+#!/bin/sh
+# The required commit checks: lint, typecheck and build, in that order.
+set -eu
+
+commit_checks='<commit-check-commands>'
+
+case "$commit_checks" in
+  '<'*)
+    echo "pre-commit: the commit-check commands are not filled in $0" >&2
+    exit 1
+    ;;
+esac
+
+cd "$(git rev-parse --show-toplevel)"
+echo "pre-commit: running $commit_checks"
+sh -ec "$commit_checks"

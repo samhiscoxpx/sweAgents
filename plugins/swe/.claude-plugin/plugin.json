@@ -1,0 +1,7 @@
+{
+  "name": "swe",
+  "version": "0.2.0",
+  "license": "MIT",
+  "description": "Shared core of twelve overlaid role and workflow skills, the standalone architecture-guardrails and quick-start skills, and the repository rules copied to .claude/rules/core.md. The repository rules template, the thin overlay stubs, the starter documents and the machine-lock tooling ship in templates/ and tooling/.",
+  "skills": "./skills/"
+}

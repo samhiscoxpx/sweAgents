@@ -1,0 +1,32 @@
+{
+  "extraKnownMarketplaces": {
+    "swe": {
+      "source": {
+        "source": "github",
+        "repo": "<owner/repository>",
+        "ref": "v<version>"
+      },
+      "autoUpdate": false
+    }
+  },
+  "enabledPlugins": {
+    "swe@swe": true
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Your context was just compacted. Use Read to read both your repository overlay at .claude/skills/<name>/SKILL.md and its pinned shared body at ~/.claude/plugins/cache/swe/swe/<pinned version>/skills/<name>/SKILL.md. Read the pinned version from .claude/settings.json without its leading v. Use phase-lead for a lead, phase-plan for a plan-writing session, or co-cto for the Co-CTO. The Skill tool may serve a cached copy and does not count as the refresh.'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": []
+  }
+}

@@ -9,6 +9,11 @@
       "name": "swe",
       "source": "./plugins/swe",
       "description": "Shared engineering rules, role and workflow skills, including overnight coordination, verified status, open-decision walkthroughs and rule editing."
+    },
+    {
+      "name": "swe-inbox",
+      "source": "./plugins/swe-inbox",
+      "description": "Optional inbox pane beside the chat for the questions and decisions swe sessions put to the human principal; answers go back to the session that asked."
     }
   ]
 }

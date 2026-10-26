@@ -1,0 +1,7 @@
+{
+  "name": "swe-inbox",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "An inbox pane beside the chat for the questions and decisions swe sessions put to the human principal, shared by every session of the repository.",
+  "types": "./types/index.d.ts"
+}

@@ -33,6 +33,7 @@ That is all. The skill reads the repository, asks only what it cannot read, show
 | `plugins/swe/skills/time-box/SKILL.md` | work limits, clock evidence and stop/report rules |
 | `plugins/swe/skills/cto-handover/SKILL.md` | a verified successor handover |
 | `plugins/swe/rules/core.md` | the shared core of the repository rules file |
+| `plugins/swe-inbox/` | an optional second plugin: an inbox pane beside the chat for the questions and decisions sessions put to the human principal; see its README |
 
 The shared rules do not name a private consuming repository or require its package names, paths,
 engines, session names or environment prefixes. The consuming repository supplies those values in

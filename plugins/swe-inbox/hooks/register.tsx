@@ -565,6 +565,7 @@ export const register: Register = on => {
             <Input
               key={`note-${item.id}`}
               label="Note "
+              rows={3}
               placeholder="optional; sent with your pick, or Enter sends it alone"
               value={draft}
               onInput={value => void update($, note, () => value)}

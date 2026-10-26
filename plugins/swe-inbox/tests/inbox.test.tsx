@@ -163,6 +163,25 @@ test('an answered item can be opened and read again', async ($, on) => {
   await ui.unmount()
 })
 
+test('a note of several lines is sent whole', async ($, on) => {
+  const files = new Map<string, string>()
+  const prompts: string[] = []
+  mock.clock(on, { now: 1000 })
+  engine(on, 'session-lead', files, prompts)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call(ASK)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Input', key: 'note-W1' }))?.props).toMatchObject({ rows: 3 })
+  await ui.input({ key: 'note-W1', text: 'Redis is in staging.\nKeep the cache small.', kind: 'change' })
+  await ui.press({ key: 'option-W1-B' })
+  await ui.unmount()
+
+  const item = JSON.parse(files.get(`${DIR}/W1.json`)!)
+  expect(item.answer.text).toBe('Redis is in staging.\nKeep the cache small.')
+  expect(prompts[0]).toContain('Redis is in staging.\nKeep the cache small.')
+})
+
 test('control characters in an item are not drawn', async ($, on) => {
   const files = new Map<string, string>()
   mock.clock(on, { now: 1000 })

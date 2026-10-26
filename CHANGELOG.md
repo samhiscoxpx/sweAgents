@@ -11,6 +11,8 @@
   changes.
 - `/inbox terminal` opens the same inbox in a terminal window of its own (`tui/inbox.py`, Python
   standard library only); an approval cannot be given there.
+- A note in the inbox can have several lines. The pane's note field is three rows tall. In the
+  inbox terminal, Ctrl+J or Alt+Enter starts a new line, and a paste keeps its lines.
 
 ## 0.2.0 — 2026-10-21
 

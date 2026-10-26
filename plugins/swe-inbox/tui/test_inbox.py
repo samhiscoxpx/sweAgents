@@ -66,5 +66,43 @@ class AnswerTest(unittest.TestCase):
         self.assertEqual(len(inbox.load(self.folder)), 3)
 
 
+class NoteTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.mkdtemp()
+        inbox.write(self.folder, item("W1"))
+        self.inbox = inbox.Inbox(self.folder)
+        self.inbox.refresh()
+
+    def type_note(self, *keys):
+        for key in ("n",) + keys + ("enter",):
+            self.inbox.handle(key)
+
+    def test_a_note_keeps_its_new_lines(self):
+        self.type_note("o", "n", "e", "newline", inbox.Paste("two\nthree"))
+        self.assertEqual(self.inbox.note, "one\ntwo\nthree")
+        self.inbox.handle("s")
+        with open(os.path.join(self.folder, "W1.json"), encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["answer"]["text"], "one\ntwo\nthree")
+
+    def test_a_note_draws_one_row_per_line(self):
+        self.inbox.handle("n")
+        self.inbox.handle(inbox.Paste("one\ntwo"))
+        drawn = self.inbox.frame(80, 30)
+        self.assertTrue(any("Note: " in row and "one" in row for row in drawn))
+        self.assertTrue(any("two" in row and "Note" not in row for row in drawn))
+        self.assertFalse(any("\ufffd" in row for row in drawn))
+
+    def test_a_paste_turns_carriage_returns_into_new_lines(self):
+        read, write = os.pipe()
+        os.write(write, b"\x1b[200~one\rtwo\x1b]52;c;aGk=\x07\r\nthree\x1b[201~")
+        self.assertEqual(inbox.read_key(read, 0.1), "one\ntwo]52;c;aGk=\nthree")
+        os.write(write, b"\x1b\r")
+        self.assertEqual(inbox.read_key(read, 0.1), "newline")
+        os.write(write, b"\n")
+        self.assertEqual(inbox.read_key(read, 0.1), "newline")
+        os.write(write, b"\r")
+        self.assertEqual(inbox.read_key(read, 0.1), "enter")
+
+
 if __name__ == "__main__":
     unittest.main()

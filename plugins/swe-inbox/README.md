@@ -24,7 +24,7 @@ Install it in every session of the repository: the Co-CTO and each lead.
   keeps every letter and number. `list` serves the status update and the walk-through.
 - **The principal answers in the pane.** `/inbox` opens it; `/inbox` again, or Esc while the pane
   has the keyboard, closes it. Digits pick an item and letters pick an option; a note can go with
-  the pick, or alone. Answered and withdrawn items fold below (`0` unfolds them); each one opens
+  the pick, or alone. A note can have several lines: type a new line as in the prompt box. Answered and withdrawn items fold below (`0` unfolds them); each one opens
   read-only, with the option picked, the note, and when and where it was answered.
 - **The answer goes back to the session that asked.** It arrives there as a prompt that starts
   "Inbox answer", so a lead acts on a decision the principal gave in the Co-CTO's pane.
@@ -54,7 +54,8 @@ python3 plugins/swe-inbox/tui/inbox.py <main worktree>/.swe/inbox
 ```
 
 ↑↓ pick an item and Enter reads it: ↑↓ then scroll the message, and Esc goes back to the list.
-a-h answer the item. `n` writes a note; once kept, a letter sends it with that pick and `s` sends it
+a-h answer the item. `n` writes a note; Ctrl+J or Alt+Enter starts a new line in it, a pasted note
+keeps its lines, and Enter keeps it. Once kept, a letter sends it with that pick and `s` sends it
 alone. `0` shows answered and withdrawn items, which open read-only. `q` quits. It beeps when an
 item arrives. An answer given there reaches the session that asked, as from the pane. An approval
 cannot be given there: the terminal is not the session that acts.

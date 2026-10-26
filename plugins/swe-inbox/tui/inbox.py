@@ -150,6 +150,25 @@ def wrapped(text: str, width: int, style: str = "", indent: str = "") -> list[Li
 ESCAPES = {b"[A": "up", b"[B": "down", b"[C": "right", b"[D": "left", b"OA": "up", b"OB": "down", b"OC": "right", b"OD": "left"}
 
 
+PASTE_START, PASTE_END = b"[200~", b"\x1b[201~"
+
+
+class Paste(str):
+    """Text pasted while bracketed paste is on, its newlines kept."""
+
+
+def read_paste(fd: int, data: bytes) -> Paste:
+    while PASTE_END not in data and select.select([fd], [], [], 0.5)[0]:
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
+        data += chunk
+    text = data.split(PASTE_END)[0].decode("utf-8", "replace")
+    # Terminals send a pasted line break as CR.
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    ")
+    return Paste("".join(char for char in text if char == "\n" or char.isprintable()))
+
+
 def read_key(fd: int, timeout: float) -> str | None:
     if not select.select([fd], [], [], timeout)[0]:
         return None
@@ -157,9 +176,16 @@ def read_key(fd: int, timeout: float) -> str | None:
     if first == b"\x1b":
         if not select.select([fd], [], [], 0.03)[0]:
             return "esc"
-        return ESCAPES.get(os.read(fd, 8)[:2], "")
-    if first in (b"\r", b"\n"):
+        sequence = os.read(fd, 8)
+        if sequence.startswith(PASTE_START):
+            return read_paste(fd, sequence[len(PASTE_START):])
+        if sequence in (b"\r", b"\n"):
+            return "newline"  # Alt+Enter
+        return ESCAPES.get(sequence[:2], "")
+    if first == b"\r":
         return "enter"
+    if first == b"\n":
+        return "newline"  # Ctrl+J
     if first in (b"\x7f", b"\x08"):
         return "backspace"
     if first in (b"\x03", b"\x04"):
@@ -250,17 +276,18 @@ class Inbox:
             reading = [(f"── {current['id']} · Enter to read and scroll ", DIM)]
         out.append(paint(reading, columns, INVERSE + ACCENT if self.focus == "message" else ""))
 
+        status = self.status_lines(columns, height)
         body = self.detail(current, columns - 4) if current else []
-        body_room = max(1, height - len(out) - 3)
+        body_room = max(1, height - len(out) - 2 - len(status))
         self.scroll = max(0, min(self.scroll, max(0, len(body) - body_room)))
         visible = body[self.scroll:self.scroll + body_room]
         for line in visible:
             out.append(paint([("  ", "")] + line, columns))
-        while len(out) < height - 3:
+        while len(out) < height - 2 - len(status):
             out.append("\x1b[K")
         below = len(body) - self.scroll - len(visible)
         out.append(paint([("─" * (columns - 14), DIM), (f" {below} more ↓" if below > 0 else "", ACCENT)], columns))
-        out.append(paint(self.status_line(), columns))
+        out += [paint(line, columns) for line in status]
         out.append(paint([(self.keys(), INVERSE)], columns - 1, INVERSE))
         return out[:height]
 
@@ -329,16 +356,22 @@ class Inbox:
             lines += wrapped(f"Withdrawn: {item.get('withdrawnReason') or 'no reason given'}", width, YELLOW)
         return lines
 
-    def status_line(self) -> Line:
+    def status_lines(self, columns: int, height: int) -> list[Line]:
         if self.focus == "note":
-            return [(" Note: ", ACCENT + BOLD), (self.draft, ""), ("▏", ACCENT)]
+            # The note's last lines, so the line being typed stays in view.
+            rows = wrapped(self.draft, max(10, columns - 8))
+            rows = rows[-max(1, min(8, height // 3)):]
+            rows[-1] = rows[-1] + [("▏", ACCENT)]
+            return [[(" Note: " if index == 0 else "       ", ACCENT + BOLD)] + row for index, row in enumerate(rows)]
         if self.note:
-            return [(" Note kept: ", ACCENT + BOLD), (self.note, ""), ("  ·  a-h send with a pick · s send note alone · Esc drop", ACCENT)]
-        return [(f" {self.status}", DIM)]
+            first, *rest = self.note.split("\n")
+            more = f" (+{len(rest)} more line{'s' if len(rest) > 1 else ''})" if rest else ""
+            return [[(" Note kept: ", ACCENT + BOLD), (first, ""), (more, DIM), ("  ·  a-h send with a pick · s send note alone · Esc drop", ACCENT)]]
+        return [[(f" {self.status}", DIM)]]
 
     def keys(self) -> str:
         if self.focus == "note":
-            return " Type your note · Enter keep · Esc drop"
+            return " Type your note · Ctrl+J or Alt+Enter new line · Enter keep · Esc drop"
         if self.focus == "message":
             return " ↑↓ scroll · Esc back · a-h answer · n note · q quit"
         return " ↑↓ select · Enter read · a-h answer · n note · 0 answered · q quit"
@@ -353,12 +386,19 @@ class Inbox:
                 self.note, self.focus = self.draft.strip(), self.back
             elif key == "esc":
                 self.focus, self.status = self.back, "Note dropped."
+            elif key == "newline":
+                self.draft += "\n"
+            elif isinstance(key, Paste):
+                self.draft += key
             elif key == "backspace":
                 self.draft = self.draft[:-1]
             elif key == "quit":
                 return False
             elif len(key) == 1 and key.isprintable():
                 self.draft += key
+            return True
+        if isinstance(key, Paste):
+            # A paste outside a note is not a run of keys.
             return True
 
         if key in ("q", "Q", "quit"):
@@ -399,7 +439,8 @@ class Inbox:
     def run(self) -> None:
         fd = sys.stdin.fileno()
         saved = termios.tcgetattr(fd)
-        sys.stdout.write(f"\x1b]0;{TITLE}\x07\x1b[?1049h\x1b[?25l")
+        # Bracketed paste keeps a pasted note's line breaks from reading as Enter.
+        sys.stdout.write(f"\x1b]0;{TITLE}\x07\x1b[?1049h\x1b[?25l\x1b[?2004h")
         try:
             tty.setraw(fd)
             self.refresh()
@@ -416,7 +457,7 @@ class Inbox:
                     last_read = time.monotonic()
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-            sys.stdout.write("\x1b[?25h\x1b[?1049l")
+            sys.stdout.write("\x1b[?2004l\x1b[?25h\x1b[?1049l")
             sys.stdout.flush()
 
 

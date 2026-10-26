@@ -143,6 +143,77 @@ async function nextId($: EngineInterface) {
   return `W${next}`
 }
 
+// Opens tui/inbox.py in a terminal window of its own: a tmux split inside
+// tmux, else a new window of the terminal this session runs in.
+async function launch($: EngineInterface) {
+  const running = await runningPid($)
+  if (running !== undefined) return `The inbox terminal is already open (process ${running}).`
+
+  const argv = ['/usr/bin/env', 'python3', `${$.plugin.root}/tui/inbox.py`, store!.dir]
+  const line = argv.map(shellQuote).join(' ')
+  const program = await $.env.get('TERM_PROGRAM')
+  const plans: string[][] = []
+  if (await $.env.get('TMUX')) plans.push(['tmux', 'split-window', '-h', '-l', '45%', ...argv])
+  if (program === 'ghostty') {
+    // A window of the Ghostty that runs: `open -na` starts another Ghostty.
+    plans.push([
+      'osascript',
+      '-e',
+      'tell application "Ghostty"',
+      '-e',
+      'set config to new surface configuration',
+      '-e',
+      `set command of config to ${appleQuote(line)}`,
+      '-e',
+      'new window with configuration config',
+      '-e',
+      'activate',
+      '-e',
+      'end tell',
+    ])
+  }
+  if (program === 'iTerm.app') {
+    plans.push([
+      'osascript',
+      '-e',
+      `tell application "iTerm2" to create window with default profile command ${appleQuote(line)}`,
+    ])
+  }
+  if (program === 'Apple_Terminal') {
+    plans.push([
+      'osascript',
+      '-e',
+      `tell application "Terminal" to do script ${appleQuote(line)}`,
+      '-e',
+      'tell application "Terminal" to activate',
+    ])
+  }
+  if (program === 'WezTerm') plans.push(['wezterm', 'cli', 'spawn', '--new-window', '--', ...argv])
+
+  for (const plan of plans) {
+    try {
+      const ran = await $.process.run(plan, { timeoutMs: 10000 })
+      if (ran.exitCode === 0) return `Inbox terminal opened (${plan[0]}).`
+    } catch {
+      // Not installed here; try the next way.
+    }
+  }
+  const copied = await $.ui.copy({ text: line })
+
+  return `No terminal could be opened from here. Run this in one${copied.isCopied ? ' (copied)' : ''}:\n${line}`
+}
+
+// tui/inbox.py writes its process id there while it runs.
+async function runningPid($: EngineInterface) {
+  const path = `${store!.dir}/terminal.pid`
+  if (!(await $.fs.exists(path))) return undefined
+  const pid = (await $.fs.read(path)).trim()
+  if (!/^\d+$/.test(pid)) return undefined
+  const probe = await $.process.run(['/bin/kill', '-0', pid], { timeoutMs: 5000 })
+
+  return probe.exitCode === 0 ? pid : undefined
+}
+
 // The file system has no exclusive create, so two sessions can take the same
 // number at once. Read the file back and take the next number if it is not ours.
 async function file($: EngineInterface, draft: InboxItem) {
@@ -167,7 +238,9 @@ export const register: Register = on => {
 
     await $.command.register({
       name: 'inbox',
-      description: 'Open or close the inbox of questions and decisions waiting on you',
+      description:
+        'Open or close the inbox of questions and decisions waiting on you; "terminal" opens it in a terminal window of its own',
+      argumentHint: '[terminal]',
     })
     await $.tool.register({
       name: 'ask',
@@ -259,7 +332,8 @@ export const register: Register = on => {
   })
 
   // /inbox toggles the pane; Esc closes it while it holds the keyboard.
-  on('command.run', { command: 'inbox' }, async $ => {
+  on('command.run', { command: 'inbox' }, async ($, e) => {
+    if (e.args.trim() === 'terminal') return { text: await launch($) }
     const panes = await $.ui.panes()
     if (panes.some(pane => pane.id === PANE)) {
       await $.ui.close({ id: PANE })
@@ -393,7 +467,12 @@ export const register: Register = on => {
 
     const record = (item: InboxItem) => {
       const given = item.answer
-      const where = given?.sessionId === mine ? 'in this session' : 'in another session'
+      const where =
+        given?.via === 'terminal'
+          ? 'in the inbox terminal'
+          : given?.sessionId === mine
+            ? 'in this session'
+            : 'in another session'
 
       return (
         <Box flexDirection="column" borderStyle="round" paddingX={1} {...frame}>
@@ -421,7 +500,7 @@ export const register: Register = on => {
               {item.deliveredAt === undefined ? ' · not yet delivered' : ' · delivered'}
             </Text>
           )}
-          {given?.text && given.via === 'pane' && <Text>Your note: {given.text}</Text>}
+          {given?.text && given.via !== 'prompt' && <Text>Your note: {given.text}</Text>}
           {given?.text && given.via === 'prompt' && <Text dimColor>You typed: {given.text}</Text>}
           {item.status === 'withdrawn' && (
             <Text color="warning">Withdrawn: {item.withdrawnReason ?? 'no reason given'}</Text>
@@ -582,7 +661,7 @@ function summary(item: InboxItem) {
   if (given === undefined) return 'open'
   const option = item.options.find(one => one.letter === given.letter)
   const pick = option ? `${option.letter}, ${option.text}` : 'no option'
-  const words = given.via === 'pane' && given.text ? `; note: "${given.text}"` : ''
+  const words = given.via !== 'prompt' && given.text ? `; note: "${given.text}"` : ''
 
   return `${pick}${words}${item.deliveredAt === undefined ? ' (not yet delivered)' : ''}`
 }
@@ -606,7 +685,19 @@ function deliveryText(item: InboxItem, sessionId: string) {
     : 'the human principal replied without choosing an option.'
   const words = given.text ? ` Their note: "${given.text}"` : ''
   const where =
-    given.sessionId === sessionId ? 'in the inbox pane of this session' : 'in the inbox of another session, relayed'
+    given.via === 'terminal'
+      ? 'in the inbox terminal, relayed'
+      : given.sessionId === sessionId
+        ? 'in the inbox pane of this session'
+        : 'in the inbox of another session, relayed'
 
   return `Inbox answer for ${item.id}, "${item.title}": ${pick}${words} Given ${where}.`
+}
+
+function shellQuote(word: string) {
+  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`
+}
+
+function appleQuote(text: string) {
+  return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }

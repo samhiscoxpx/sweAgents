@@ -9,6 +9,8 @@
   approval is answered only in the session that raised it, by a prompt the principal sends. Items
   are kept in `.swe/inbox/` under the main working tree, shared by every worktree. No core rule
   changes.
+- `/inbox terminal` opens the same inbox in a terminal window of its own (`tui/inbox.py`, Python
+  standard library only); an approval cannot be given there.
 
 ## 0.2.0 — 2026-10-21
 

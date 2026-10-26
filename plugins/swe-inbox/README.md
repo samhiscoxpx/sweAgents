@@ -40,11 +40,33 @@ Install it in every session of the repository: the Co-CTO and each lead.
 The `ask` tool's description tells agents to file questions this way. The mod also adds the same
 text to the system prompt, where no managed plugin passes that hook by.
 
+## In a terminal of its own
+
+`/inbox terminal` opens the same inbox in a terminal window of its own, so it can sit on another
+screen. Inside tmux it opens a split; otherwise a new window of Ghostty (1.3 or later, through its
+AppleScript), iTerm2, Terminal.app or WezTerm, whichever runs the session. Where none of these
+applies, the command copies the line to run. One inbox terminal runs at a time: while one is open,
+the command says so and opens no other. The first launch through AppleScript asks macOS to let
+Claude Code control the terminal. The program is `tui/inbox.py`: Python 3, standard library only.
+
+```
+python3 plugins/swe-inbox/tui/inbox.py <main worktree>/.swe/inbox
+```
+
+↑↓ or j/k pick an item, a-h answer it, `n` writes a note that goes with the next pick (`s` sends the
+note alone), `0` shows answered and withdrawn items, PgUp/PgDn scroll, `q` quits. It beeps when an
+item arrives. An answer given there reaches the session that asked, as from the pane. An approval
+cannot be given there: the terminal is not the session that acts.
+
 ## Where the items live
 
 One JSON file per item in `.swe/inbox/` under the repository's main working tree, so every
 worktree's session reads the same inbox. The mod writes `.swe/.gitignore` (`*`), so git ignores the
 folder. Each session reads the folder every three seconds.
+
+A session picks its inbox folder when it starts, or when the mod reloads, from the repository its
+project root is in. A session that moves to another project mid-way uses that project's inbox from
+its next reload.
 
 The file system has no exclusive create. A session reads each new file back and takes the next
 W-number if another session wrote over it. Two sessions that file in the same few milliseconds can
@@ -55,5 +77,6 @@ still lose one item. Filing goes through the Co-CTO in the usual flow, so this i
 ```
 claude plugin validate plugins/swe-inbox
 claude plugin test plugins/swe-inbox
+python3 -m unittest discover -s plugins/swe-inbox/tui
 claude --plugin-dir plugins/swe-inbox
 ```

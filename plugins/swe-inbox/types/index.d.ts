@@ -15,7 +15,8 @@ export type InboxAnswer = {
   at: number
   // The session the human principal answered in.
   sessionId: string
-  via: 'pane' | 'prompt'
+  // 'terminal' is the standalone inbox, tui/inbox.py.
+  via: 'pane' | 'prompt' | 'terminal'
 }
 
 export type InboxItem = {

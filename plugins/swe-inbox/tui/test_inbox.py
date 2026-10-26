@@ -54,6 +54,12 @@ class AnswerTest(unittest.TestCase):
         self.assertIn("no longer open", inbox.answer(self.folder, "W1", "B", ""))
         self.assertEqual(self.stored("W1")["answer"]["letter"], "A")
 
+    def test_control_characters_are_not_drawn(self):
+        drawn = inbox.paint([("title\x1b]52;c;aGk=\x07 \x9b2J", "")], 80)
+        self.assertNotIn("\x9b", drawn)
+        self.assertEqual(drawn.count("\x1b"), 2)  # the RESET after the text and the closing erase
+        self.assertIn("\ufffd]52;c;aGk=\ufffd", drawn)
+
     def test_a_half_written_file_is_skipped(self):
         with open(os.path.join(self.folder, "W3.json"), "w", encoding="utf-8") as handle:
             handle.write("{")

@@ -102,6 +102,12 @@ ACCENT = "\x1b[35m"
 Line = list  # of (text, style) pieces
 
 
+def clean(text: str) -> str:
+    # Item text comes from files agents write: a control character in it, ESC
+    # above all, would drive the terminal. Draw each one as U+FFFD instead.
+    return "".join(char if char.isprintable() else "\ufffd" for char in text)
+
+
 def cells(text: str) -> int:
     return sum(
         0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
@@ -121,7 +127,7 @@ def clip(text: str, room: int) -> str:
 def paint(line: Line, columns: int, fill: str = "") -> str:
     out, used = [], 0
     for text, style in line:
-        piece = clip(text, columns - used)
+        piece = clip(clean(text), columns - used)
         if not piece:
             break
         out.append(f"{style}{piece}{RESET}")

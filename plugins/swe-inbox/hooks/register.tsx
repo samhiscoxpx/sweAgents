@@ -55,7 +55,7 @@ async function loadAll($: EngineInterface): Promise<InboxItem[]> {
   for (const entry of await $.fs.list(store!.dir)) {
     if (entry.kind !== 'file' || !/^W\d+\.json$/.test(entry.name)) continue
     try {
-      found.push(JSON.parse(await $.fs.read(`${store!.dir}/${entry.name}`)))
+      found.push(cleanItem(JSON.parse(await $.fs.read(`${store!.dir}/${entry.name}`))))
     } catch {
       // A file another session is writing now; the next poll reads it.
     }
@@ -643,6 +643,28 @@ export const register: Register = on => {
       </Box>
     )
   })
+}
+
+// Item text comes from files agents write: a control character in it, ESC
+// above all, would drive the terminal the pane draws in. Newlines stay.
+function clean(text: string) {
+  return text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '\ufffd')
+}
+
+function cleanItem(item: InboxItem): InboxItem {
+  return {
+    ...item,
+    title: clean(item.title),
+    context: clean(item.context),
+    from: clean(item.from),
+    options: item.options.map(option => ({
+      ...option,
+      text: clean(option.text),
+      ...(option.cost === undefined ? {} : { cost: clean(option.cost) }),
+    })),
+    ...(item.answer?.text === undefined ? {} : { answer: { ...item.answer, text: clean(item.answer.text) } }),
+    ...(item.withdrawnReason === undefined ? {} : { withdrawnReason: clean(item.withdrawnReason) }),
+  }
 }
 
 function numberOf(id: string) {

@@ -162,3 +162,31 @@ test('an answered item can be opened and read again', async ($, on) => {
   expect(await ui.find({ type: 'Button', key: 'option-W1-B' })).toBeUndefined()
   await ui.unmount()
 })
+
+test('control characters in an item are not drawn', async ($, on) => {
+  const files = new Map<string, string>()
+  mock.clock(on, { now: 1000 })
+  engine(on, 'session-lead', files, [])
+  files.set(
+    `${DIR}/W1.json`,
+    JSON.stringify({
+      id: 'W1',
+      kind: 'decision',
+      title: 'Evil\u001b]52;c;aGk=\u0007 title',
+      context: 'line one\nline two\u001b[2J',
+      options: [{ letter: 'A', text: 'ok\u009b' }],
+      from: 'lead',
+      sessionId: 'session-lead',
+      createdAt: 0,
+      status: 'open',
+    }),
+  )
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const texts = (await ui.findAll({})).map(found => found.text ?? '').join('\n')
+  expect(texts).not.toMatch(/[\u001b\u0007\u009b]/)
+  expect(texts).toContain('Evil�]52;c;aGk=� title')
+  expect(texts).toContain('line one\nline two�[2J')
+  await ui.unmount()
+})

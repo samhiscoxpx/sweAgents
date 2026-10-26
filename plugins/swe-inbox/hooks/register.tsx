@@ -683,7 +683,7 @@ function deliveryText(item: InboxItem, sessionId: string) {
   const pick = option
     ? `the human principal chose ${option.letter} (${option.text}).`
     : 'the human principal replied without choosing an option.'
-  const words = given.text ? ` Their note: "${given.text}"` : ''
+  const words = given.text ? ` Their note: "${given.text}".` : ''
   const where =
     given.via === 'terminal'
       ? 'in the inbox terminal, relayed'

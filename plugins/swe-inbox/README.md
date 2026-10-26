@@ -53,10 +53,14 @@ Claude Code control the terminal. The program is `tui/inbox.py`: Python 3, stand
 python3 plugins/swe-inbox/tui/inbox.py <main worktree>/.swe/inbox
 ```
 
-↑↓ or j/k pick an item, a-h answer it, `n` writes a note that goes with the next pick (`s` sends the
-note alone), `0` shows answered and withdrawn items, PgUp/PgDn scroll, `q` quits. It beeps when an
+↑↓ pick an item and Enter reads it: ↑↓ then scroll the message, and Esc goes back to the list.
+a-h answer the item. `n` writes a note; once kept, a letter sends it with that pick and `s` sends it
+alone. `0` shows answered and withdrawn items, which open read-only. `q` quits. It beeps when an
 item arrives. An answer given there reaches the session that asked, as from the pane. An approval
 cannot be given there: the terminal is not the session that acts.
+
+It draws with plain ANSI escape codes, not curses: the macOS system Python links an ncurses
+without wide-character support, which corrupts a screen holding characters such as "✓".
 
 ## Where the items live
 

@@ -11,17 +11,19 @@ answers. Standard library only.
 
 from __future__ import annotations
 
-import curses
 import json
-import locale
 import os
 import re
+import select
 import sys
 import tempfile
+import termios
 import textwrap
 import time
+import tty
+import unicodedata
 
-POLL_MS = 1000
+POLL_S = 1.0
 TITLE = "swe inbox"
 # Names the running inbox, so /inbox terminal opens one window, not several.
 PID_FILE = "terminal.pid"
@@ -84,29 +86,110 @@ def clock(ms: int) -> str:
     return time.strftime("%H:%M", time.localtime(ms / 1000))
 
 
+# -- drawing -----------------------------------------------------------------
+# Plain ANSI, the whole screen each frame. Not curses: the macOS system Python
+# links an ncurses without wide-character support, which miscounts "›", "✓"
+# and "─" and leaves stale text on screen.
+
+RESET = "\x1b[0m"
+BOLD = "\x1b[1m"
+DIM = "\x1b[2m"
+INVERSE = "\x1b[7m"
+GREEN = "\x1b[32m"
+YELLOW = "\x1b[33m"
+ACCENT = "\x1b[35m"
+
+Line = list  # of (text, style) pieces
+
+
+def cells(text: str) -> int:
+    return sum(
+        0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
+        for char in text
+    )
+
+
+def clip(text: str, room: int) -> str:
+    used = 0
+    for index, char in enumerate(text):
+        used += cells(char)
+        if used > room:
+            return text[:index]
+    return text
+
+
+def paint(line: Line, columns: int, fill: str = "") -> str:
+    out, used = [], 0
+    for text, style in line:
+        piece = clip(text, columns - used)
+        if not piece:
+            break
+        out.append(f"{style}{piece}{RESET}")
+        used += cells(piece)
+    if fill and used < columns:
+        out.append(f"{fill}{' ' * (columns - used)}{RESET}")
+    return "".join(out) + "\x1b[K"
+
+
+def wrapped(text: str, width: int, style: str = "", indent: str = "") -> list[Line]:
+    lines = []
+    for paragraph in text.split("\n"):
+        for row in textwrap.wrap(paragraph, width, subsequent_indent=indent) or [""]:
+            lines.append([(row, style)])
+    return lines
+
+
+# -- keys --------------------------------------------------------------------
+
+ESCAPES = {b"[A": "up", b"[B": "down", b"[C": "right", b"[D": "left", b"OA": "up", b"OB": "down", b"OC": "right", b"OD": "left"}
+
+
+def read_key(fd: int, timeout: float) -> str | None:
+    if not select.select([fd], [], [], timeout)[0]:
+        return None
+    first = os.read(fd, 1)
+    if first == b"\x1b":
+        if not select.select([fd], [], [], 0.03)[0]:
+            return "esc"
+        return ESCAPES.get(os.read(fd, 8)[:2], "")
+    if first in (b"\r", b"\n"):
+        return "enter"
+    if first in (b"\x7f", b"\x08"):
+        return "backspace"
+    if first in (b"\x03", b"\x04"):
+        return "quit"
+    extra = 3 if first[0] >= 0xF0 else 2 if first[0] >= 0xE0 else 1 if first[0] >= 0xC0 else 0
+    data = first + (os.read(fd, extra) if extra else b"")
+    return data.decode("utf-8", "replace")
+
+
+# -- the inbox ---------------------------------------------------------------
+
+
 class Inbox:
-    def __init__(self, screen, folder: str) -> None:
-        self.screen = screen
+    def __init__(self, folder: str) -> None:
         self.folder = folder
         self.items: list[dict] = []
         self.selected: str | None = None
         self.is_showing_closed = False
+        # "list" picks an item, "message" reads it, "note" types a note.
+        self.focus = "list"
+        self.back = "list"
         self.note = ""
-        self.status = "Ready."
+        self.draft = ""
+        self.status = ""
         self.scroll = 0
+        self.list_top = 0
         self.seen: set[str] | None = None
-
-    # -- data ---------------------------------------------------------------
 
     def refresh(self) -> None:
         self.items = load(self.folder)
-        ids = {item["id"] for item in self.items}
         if self.seen is not None:
             arrived = [i for i in self.items if i["id"] not in self.seen and i["status"] == "open"]
             if arrived:
-                curses.beep()
+                sys.stdout.write("\a")
                 self.status = "New: " + ", ".join(f"{i['id']} from {i['from']}" for i in arrived)
-        self.seen = ids
+        self.seen = {item["id"] for item in self.items}
 
     def rows(self) -> list[dict]:
         open_items = [item for item in self.items if item["status"] == "open"]
@@ -119,195 +202,216 @@ class Inbox:
         if found is None and rows:
             found = rows[0]
             self.selected = found["id"]
+            self.scroll = 0
         return found
 
     def move(self, step: int) -> None:
-        rows = self.rows()
-        if not rows:
+        ids = [item["id"] for item in self.rows()]
+        if not ids:
             return
-        ids = [item["id"] for item in rows]
         index = ids.index(self.selected) if self.selected in ids else 0
         self.selected = ids[max(0, min(len(ids) - 1, index + step))]
         self.scroll = 0
 
-    # -- drawing ------------------------------------------------------------
+    # -- frame --------------------------------------------------------------
 
-    def put(self, y: int, x: int, text: str, attr: int = 0) -> None:
-        height, width = self.screen.getmaxyx()
-        if 0 <= y < height and x < width:
-            try:
-                self.screen.addnstr(y, x, text, max(0, width - x - 1), attr)
-            except curses.error:
-                pass
-
-    def draw(self) -> None:
-        screen = self.screen
-        screen.erase()
-        height, width = screen.getmaxyx()
-        open_count = sum(1 for item in self.items if item["status"] == "open")
-        closed_count = len(self.items) - open_count
-        accent = curses.color_pair(1) | curses.A_BOLD
-
-        self.put(0, 0, f" swe inbox · {open_count} waiting on you · {closed_count} answered or withdrawn ".ljust(width), curses.A_REVERSE)
-        y = 2
+    def frame(self, columns: int, height: int) -> list[str]:
         rows = self.rows()
         current = self.current()
-        list_height = max(3, min(len(rows) + 2, height // 3))
-        if not [item for item in rows if item["status"] == "open"]:
-            self.put(y, 2, "Nothing is waiting on you.", curses.A_DIM)
-            y += 1
-        for item in rows:
-            if y >= 2 + list_height - 1:
-                break
-            is_current = current is not None and item["id"] == current["id"]
-            marker = "›" if is_current else " "
-            if item["status"] == "open":
-                tag = item["kind"]
-                tag_attr = curses.color_pair(3) if item["kind"] == "approval" else curses.A_DIM
-            elif item["status"] == "answered":
-                tag = f"✓ {item.get('answer', {}).get('letter', 'note')}"
-                tag_attr = curses.color_pair(2)
-            else:
-                tag, tag_attr = "withdrawn", curses.color_pair(3)
-            base = curses.A_REVERSE if is_current else 0
-            self.put(y, 1, f"{marker} {item['id']:<4}", base | (curses.A_BOLD if is_current else 0))
-            self.put(y, 9, f"{tag:<9}", tag_attr | base)
-            self.put(y, 19, f"{item['title']}", base)
-            meta = f" {item['from']} {clock(item['createdAt'])} "
-            self.put(y, max(19, width - len(meta) - 1), meta, curses.A_DIM | base)
-            y += 1
+        open_count = sum(1 for item in self.items if item["status"] == "open")
+        closed_count = len(self.items) - open_count
+        out = [paint([(f" {TITLE} · {open_count} waiting on you · {closed_count} answered or withdrawn", INVERSE)], columns, INVERSE), ""]
+
+        room = max(3, min(len(rows), height // 3))
+        index = next((i for i, item in enumerate(rows) if current and item["id"] == current["id"]), 0)
+        self.list_top = min(max(self.list_top, index - room + 1), index)
+        shown = rows[self.list_top:self.list_top + room]
+        if not any(item["status"] == "open" for item in self.items):
+            out.append(paint([("  Nothing is waiting on you.", DIM)], columns))
+        for item in shown:
+            out.append(paint(self.row(item, current, columns), columns, INVERSE if self.is_row_lit(item, current) else ""))
+        while len(out) < 2 + room + (0 if any(i["status"] == "open" for i in self.items) else 1):
+            out.append("\x1b[K")
+        more = f" · {len(rows) - self.list_top - len(shown)} more below" if self.list_top + len(shown) < len(rows) else ""
         toggle = "▾" if self.is_showing_closed else "▸"
-        self.put(y, 2, f"{toggle} Answered or withdrawn ({closed_count})  [0]", curses.A_DIM)
-        y += 1
-        self.put(y, 0, "─" * (width - 1), curses.A_DIM)
-        y += 1
+        out.append(paint([(f"  {toggle} Answered or withdrawn ({closed_count}) · 0{more}", DIM)], columns))
 
-        detail_top = y
-        lines = self.detail_lines(current, width - 4) if current else []
-        room = height - detail_top - 3
-        self.scroll = max(0, min(self.scroll, max(0, len(lines) - room)))
-        for offset, (text, attr) in enumerate(lines[self.scroll:self.scroll + room]):
-            self.put(detail_top + offset, 2, text, attr)
-
-        self.put(height - 3, 0, "─" * (width - 1), curses.A_DIM)
-        if self.note:
-            self.put(height - 2, 1, f"Note: {self.note}", accent)
+        if current is None:
+            reading = [("", "")]
+        elif self.focus == "message":
+            reading = [(f" ▌Reading {current['id']} · ↑↓ scroll · Esc back to the list", INVERSE + ACCENT + BOLD)]
         else:
-            self.put(height - 2, 1, self.status, curses.A_DIM)
-        keys = " ↑↓ item · a-h answer · n note · s send note · 0 answered · PgUp/PgDn scroll · q quit "
-        self.put(height - 1, 0, keys.ljust(width), curses.A_REVERSE)
-        screen.refresh()
+            reading = [(f"── {current['id']} · Enter to read and scroll ", DIM)]
+        out.append(paint(reading, columns, INVERSE + ACCENT if self.focus == "message" else ""))
 
-    def detail_lines(self, item: dict, width: int) -> list[tuple[str, int]]:
-        width = max(20, width)
-        lines: list[tuple[str, int]] = [
-            (f"{item['id']} · {item['title']}", curses.A_BOLD),
-            (f"{item['kind']} · from {item['from']} · {clock(item['createdAt'])} · {item['status']}", curses.A_DIM),
-            ("", 0),
+        body = self.detail(current, columns - 4) if current else []
+        body_room = max(1, height - len(out) - 3)
+        self.scroll = max(0, min(self.scroll, max(0, len(body) - body_room)))
+        visible = body[self.scroll:self.scroll + body_room]
+        for line in visible:
+            out.append(paint([("  ", "")] + line, columns))
+        while len(out) < height - 3:
+            out.append("\x1b[K")
+        below = len(body) - self.scroll - len(visible)
+        out.append(paint([("─" * (columns - 14), DIM), (f" {below} more ↓" if below > 0 else "", ACCENT)], columns))
+        out.append(paint(self.status_line(), columns))
+        out.append(paint([(self.keys(), INVERSE)], columns - 1, INVERSE))
+        return out[:height]
+
+    def is_row_lit(self, item: dict, current: dict | None) -> bool:
+        return self.focus == "list" and current is not None and item["id"] == current["id"]
+
+    def row(self, item: dict, current: dict | None, columns: int) -> Line:
+        is_current = current is not None and item["id"] == current["id"]
+        lit = INVERSE if self.is_row_lit(item, current) else ""
+        if item["status"] == "open":
+            tag, tag_style = item["kind"], (YELLOW if item["kind"] == "approval" else DIM)
+        elif item["status"] == "answered":
+            tag, tag_style = f"✓ {(item.get('answer') or {}).get('letter', 'note')}", GREEN
+        else:
+            tag, tag_style = "withdrawn", YELLOW
+        meta = f" {item['from']} {clock(item['createdAt'])} "
+        title_room = max(10, columns - 21 - cells(meta))
+        title = clip(item["title"], title_room).ljust(title_room)
+        marker = "›" if is_current else " "
+        mark_style = (ACCENT + BOLD) if is_current and self.focus != "list" else ""
+        return [
+            (f" {marker} ", lit + mark_style),
+            (f"{item['id']:<5}", lit + (BOLD if is_current else "")),
+            (f"{tag:<10}", lit + tag_style),
+            (title, lit),
+            (meta, lit + DIM),
         ]
-        for paragraph in item["context"].split("\n"):
-            lines += [(line, 0) for line in (textwrap.wrap(paragraph, width) or [""])]
-        lines.append(("", 0))
-        given = item.get("answer") or {}
+
+    def detail(self, item: dict, width: int) -> list[Line]:
+        width = max(20, width)
         is_open = item["status"] == "open"
+        given = item.get("answer") or {}
+        lines: list[Line] = [
+            [(f"{item['id']} · {item['title']}", BOLD)],
+            [(f"{item['kind']} · from {item['from']} · {clock(item['createdAt'])} · {item['status']}", DIM)],
+            [],
+        ]
+        lines += wrapped(item["context"], width)
+        lines.append([])
+        offer = is_open and item["kind"] == "decision"
         for option in item["options"]:
             picked = given.get("letter") == option["letter"]
-            head = f"{option['letter'].lower()}  " if is_open else ("✓  " if picked else "   ")
+            head = f"{option['letter'].lower()}  " if offer else ("✓  " if picked else "   ")
             text = f"{head}{option['letter']}{' [REC]' if option.get('isRec') else ''} {option['text']}"
             if option.get("cost"):
                 text += f" ({option['cost']})"
-            attr = curses.color_pair(2) | curses.A_BOLD if picked else (0 if is_open else curses.A_DIM)
-            wrapped = textwrap.wrap(text, width, subsequent_indent="      ") or [text]
-            lines += [(line, attr) for line in wrapped]
-        lines.append(("", 0))
+            style = GREEN + BOLD if picked else (ACCENT if offer and self.note else "" if offer else DIM)
+            lines += wrapped(text, width, style, indent="      ")
+        lines.append([])
         if is_open and item["kind"] == "approval":
-            lines.append((f"Answer this in the session of {item['from']}: an approval must be", curses.color_pair(3)))
-            lines.append(("your own word in the session that acts.", curses.color_pair(3)))
+            lines += wrapped(
+                f"An approval: answer it in the session of {item['from']} by typing {item['id']}: <letter> there. "
+                "It must be your own word in the session that acts, so it cannot be given here.",
+                width,
+                YELLOW,
+            )
         if given:
             where = {"terminal": "in the inbox terminal", "pane": "in an inbox pane", "prompt": "in a chat"}.get(given.get("via"), "")
             delivered = "delivered" if item.get("deliveredAt") else "not yet delivered"
             pick = f": {given['letter']}" if given.get("letter") else ", with no option"
-            lines.append((f"Answered {clock(given['at'])} {where}{pick} · {delivered}", curses.color_pair(2)))
+            lines.append([(f"Answered {clock(given['at'])} {where}{pick} · {delivered}", GREEN)])
             if given.get("text"):
                 label = "You typed" if given.get("via") == "prompt" else "Your note"
-                lines += [(line, 0) for line in textwrap.wrap(f"{label}: {given['text']}", width)]
+                lines += wrapped(f"{label}: {given['text']}", width)
         if item["status"] == "withdrawn":
-            lines.append((f"Withdrawn: {item.get('withdrawnReason') or 'no reason given'}", curses.color_pair(3)))
+            lines += wrapped(f"Withdrawn: {item.get('withdrawnReason') or 'no reason given'}", width, YELLOW)
         return lines
+
+    def status_line(self) -> Line:
+        if self.focus == "note":
+            return [(" Note: ", ACCENT + BOLD), (self.draft, ""), ("▏", ACCENT)]
+        if self.note:
+            return [(" Note kept: ", ACCENT + BOLD), (self.note, ""), ("  ·  a-h send with a pick · s send note alone · Esc drop", ACCENT)]
+        return [(f" {self.status}", DIM)]
+
+    def keys(self) -> str:
+        if self.focus == "note":
+            return " Type your note · Enter keep · Esc drop"
+        if self.focus == "message":
+            return " ↑↓ scroll · Esc back · a-h answer · n note · q quit"
+        return " ↑↓ select · Enter read · a-h answer · n note · 0 answered · q quit"
 
     # -- input --------------------------------------------------------------
 
-    def read_note(self) -> None:
-        curses.curs_set(1)
-        height, width = self.screen.getmaxyx()
-        text = self.note
-        while True:
-            self.put(height - 2, 0, " " * (width - 1))
-            self.put(height - 2, 1, f"Note (Enter keeps, Esc drops): {text}", curses.color_pair(1) | curses.A_BOLD)
-            self.screen.refresh()
-            key = self.screen.get_wch()
-            if key in ("\n", "\r", curses.KEY_ENTER):
-                self.note = text.strip()
-                self.status = "Note kept: press a letter to send it with a pick, or s to send it alone."
-                break
-            if key == "\x1b":
-                self.status = "Note dropped."
-                self.note = ""
-                break
-            if key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
-                text = text[:-1]
-            elif isinstance(key, str) and key.isprintable():
-                text += key
-        curses.curs_set(0)
+    def handle(self, key: str) -> bool:
+        """Applies one key; returns False to quit."""
+        current = self.current()
+        if self.focus == "note":
+            if key == "enter":
+                self.note, self.focus = self.draft.strip(), self.back
+            elif key == "esc":
+                self.focus, self.status = self.back, "Note dropped."
+            elif key == "backspace":
+                self.draft = self.draft[:-1]
+            elif key == "quit":
+                return False
+            elif len(key) == 1 and key.isprintable():
+                self.draft += key
+            return True
+
+        if key in ("q", "Q", "quit"):
+            return False
+        if key == "esc" and self.note:
+            self.note, self.status = "", "Note dropped."
+        elif self.focus == "message":
+            if key in ("up", "k"):
+                self.scroll = max(0, self.scroll - 1)
+            elif key in ("down", "j", " "):
+                self.scroll += 1
+            elif key in ("esc", "enter", "left"):
+                self.focus = "list"
+        elif key in ("up", "k"):
+            self.move(-1)
+        elif key in ("down", "j"):
+            self.move(1)
+        elif key in ("enter", "right") and current is not None:
+            self.focus, self.scroll = "message", 0
+        elif key == "0":
+            self.is_showing_closed = not self.is_showing_closed
+
+        if key == "n" and current is not None and current["status"] == "open" and current["kind"] == "decision":
+            self.back, self.focus, self.draft = self.focus, "note", self.note
+        elif key == "s" and current is not None and self.note:
+            self.status = answer(self.folder, current["id"], None, self.note)
+            self.note = ""
+        elif len(key) == 1 and "a" <= key <= "h" and current is not None:
+            if current["status"] != "open":
+                self.status = f"{current['id']} is {current['status']}."
+            elif key.upper() in [option["letter"] for option in current["options"]]:
+                self.status = answer(self.folder, current["id"], key.upper(), self.note)
+                if not self.status.startswith(current["id"]):
+                    self.note = ""
+        self.refresh()
+        return True
 
     def run(self) -> None:
-        curses.curs_set(0)
-        self.screen.timeout(POLL_MS)
-        self.screen.keypad(True)
-        self.refresh()
-        while True:
-            self.draw()
-            try:
-                key = self.screen.get_wch()
-            except curses.error:
-                self.refresh()
-                continue
-            current = self.current()
-            if key in ("q", "Q"):
-                return
-            if key in (curses.KEY_DOWN, "j"):
-                self.move(1)
-            elif key in (curses.KEY_UP, "k"):
-                self.move(-1)
-            elif key == curses.KEY_NPAGE or key == " ":
-                self.scroll += 5
-            elif key == curses.KEY_PPAGE:
-                self.scroll = max(0, self.scroll - 5)
-            elif key == "0":
-                self.is_showing_closed = not self.is_showing_closed
-            elif key == "n" and current is not None and current["status"] == "open":
-                self.read_note()
-            elif key == "s" and current is not None and self.note:
-                self.status = answer(self.folder, current["id"], None, self.note)
-                self.note = ""
-            elif isinstance(key, str) and len(key) == 1 and "a" <= key <= "h" and current is not None:
-                letters = [option["letter"] for option in current["options"]]
-                if current["status"] != "open":
-                    self.status = f"{current['id']} is {current['status']}."
-                elif key.upper() in letters:
-                    self.status = answer(self.folder, current["id"], key.upper(), self.note)
-                    self.note = ""
-            elif key == curses.KEY_RESIZE:
-                pass
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+        sys.stdout.write(f"\x1b]0;{TITLE}\x07\x1b[?1049h\x1b[?25l")
+        try:
+            tty.setraw(fd)
             self.refresh()
-
-
-def main(screen, folder: str) -> None:
-    curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_MAGENTA, -1)
-    curses.init_pair(2, curses.COLOR_GREEN, -1)
-    curses.init_pair(3, curses.COLOR_YELLOW, -1)
-    Inbox(screen, folder).run()
+            last_read = time.monotonic()
+            while True:
+                size = os.get_terminal_size(sys.stdout.fileno())
+                sys.stdout.write("\x1b[H" + "\r\n".join(self.frame(size.columns, size.lines)) + "\x1b[J")
+                sys.stdout.flush()
+                key = read_key(fd, 0.25)
+                if key is not None and not self.handle(key):
+                    return
+                if time.monotonic() - last_read >= POLL_S:
+                    self.refresh()
+                    last_read = time.monotonic()
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+            sys.stdout.write("\x1b[?25h\x1b[?1049l")
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":
@@ -321,12 +425,8 @@ if __name__ == "__main__":
     pid_path = os.path.join(folder, PID_FILE)
     with open(pid_path, "w", encoding="utf-8") as handle:
         handle.write(f"{os.getpid()}\n")
-    sys.stdout.write(f"\x1b]0;{TITLE}\x07")
-    sys.stdout.flush()
-    locale.setlocale(locale.LC_ALL, "")
-    os.environ.setdefault("ESCDELAY", "25")
     try:
-        curses.wrapper(main, folder)
+        Inbox(folder).run()
     finally:
         if running_pid(folder) == os.getpid():
             os.remove(pid_path)
